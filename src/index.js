@@ -1,4 +1,4 @@
-import net from "node:net";                 
+import net from "node:net";
 net.setDefaultAutoSelectFamily(false);
 
 import express from "express";
@@ -11,7 +11,7 @@ import {
     mainMenuKeyboard,
     readingResultKeyboard,
     listeningResultKeyboard,
-    speakingResultKeyboard
+    speakingResultKeyboard,
 } from "./keyboards.js";
 
 import { getSession, resetSession } from "./sessions.js";
@@ -22,18 +22,19 @@ import {
     ttsFromKoreanText,
     generateSpeakingExercise,
     evaluateSpeakingResponse,
-    transcribeAudioFromUrl
+    transcribeAudioFromUrl,
+    generateFreeChatReply
 } from "./ai.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
-  res.send("Placement bot is running ✅");
+    res.send("Placement bot is running ✅");
 });
 
 app.listen(PORT, () => {
-  console.log(`HTTP server is listening on port ${PORT}`);
+    console.log(`HTTP server is listening on port ${PORT}`);
 });
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -266,6 +267,10 @@ bot.action("PRACTICE_READING", async (ctx) => {
     await handlePracticeChoice(ctx, "reading");
 });
 
+bot.action("PRACTICE_FREE", async (ctx) => {
+    await handlePracticeChoice(ctx, "free");
+});
+
 async function handlePracticeChoice(ctx, type) {
     try {
         const userId = ctx.from.id;
@@ -284,6 +289,14 @@ async function handlePracticeChoice(ctx, type) {
         } else if (type === "listening") {
             await ctx.reply("👂 I'll prepare a listening audio for you...");
             await startListeningExercise(ctx, session);
+        } else if (type === "free") {
+            await ctx.answerCbQuery();
+            await ctx.reply(
+                "💬 Free mode: I will chat with you as a Korean university student. Let's talk!",
+                mainMenuKeyboard()
+            );
+            await startFreeChat(ctx, session);
+            return;
         }
 
         log(`User ${userId} chose practice type: ${type}`);
@@ -413,6 +426,79 @@ async function startListeningExercise(ctx, session) {
         errorLog("Error while generating listening exercise:", err);
         await ctx.reply(
             "Couldn't prepare a listening task 😔 Please try again a bit later.",
+            mainMenuKeyboard()
+        );
+    }
+}
+
+async function startFreeChat(ctx, session) {
+    const level = session.level || "1";
+
+    try {
+        // Bot starts messaging first
+        const reply = await generateFreeChatReply({
+            level,
+            userMessage: ""
+        });
+
+        const keyboard = mainMenuKeyboard();
+
+        let msg =
+            `${reply.korean}\n\n` +
+            `<tg-spoiler>${reply.english_translation}</tg-spoiler>`;
+
+        if (Array.isArray(reply.corrections) && reply.corrections.length > 0) {
+            msg += `\n\n<b>Corrections:</b>\n`;
+            reply.corrections.slice(0, 3).forEach((c, idx) => {
+                msg += `${idx + 1}) ${c.original} → ${c.corrected}\n${c.explanation_ru}\n`;
+            });
+        }
+
+        await ctx.reply(msg, {
+            reply_markup: keyboard.reply_markup,
+            parse_mode: "HTML"
+        });
+    } catch (err) {
+        errorLog("Error in startFreeChat:", err);
+        await ctx.reply(
+            "Failed to start a conversation in free mode 😔 Try again.",
+            mainMenuKeyboard()
+        );
+    }
+}
+
+async function handleFreeChatMessage(ctx, session, userText, source) {
+    const level = session.level || "1";
+    const msgFrom = source === "voice" ? "voice" : "text";
+    try {
+        const reply = await generateFreeChatReply({
+            level,
+            userMessage: userText
+        });
+
+        const keyboard = mainMenuKeyboard();
+
+        let msg =
+            `${reply.korean}\n\n` +
+            `<tg-spoiler>${reply.english_translation}</tg-spoiler>`;
+
+        if (Array.isArray(reply.corrections) && reply.corrections.length > 0) {
+            msg += `\n\n<b>Corrections:</b>\n`;
+            reply.corrections.slice(0, 3).forEach((c, idx) => {
+                msg += `${idx + 1}) ${c.original} → ${c.corrected}\n${c.explanation_ru}\n`;
+            });
+        }
+
+        await ctx.reply(msg, {
+            reply_markup: keyboard.reply_markup,
+            parse_mode: "HTML"
+        });
+
+        log(`Free chat reply (${msgFrom}), user ${ctx.from.id}`);
+    } catch (err) {
+        errorLog("Error in handleFreeChatMessage:", err);
+        await ctx.reply(
+            "An error occurred in free mode 😔 Try writing again or changing the mode.",
             mainMenuKeyboard()
         );
     }
@@ -568,6 +654,11 @@ bot.on("text", async (ctx, next) => {
     const userId = ctx.from.id;
     const session = getSession(userId);
 
+    if (session.practiceType === "free") {
+        await handleFreeChatMessage(ctx, session, text, "text");
+        return;
+    }
+
     if (
         session.practiceType === "reading" &&
         session.reading &&
@@ -605,6 +696,30 @@ bot.on("text", async (ctx, next) => {
 bot.on("voice", async (ctx, next) => {
     const userId = ctx.from.id;
     const session = getSession(userId);
+
+    // free-mode
+    if (session.practiceType === "free") {
+        try {
+            const voice = ctx.message.voice;
+            const fileId = voice.file_id;
+
+            const fileLink = await ctx.telegram.getFileLink(fileId);
+            const fileUrl = fileLink.href || fileLink.toString();
+
+            await ctx.reply("Сейчас расшифрую ваше голосовое и отвечу 🙂");
+
+            const transcript = await transcribeAudioFromUrl(fileUrl);
+
+            await handleFreeChatMessage(ctx, session, transcript, "voice");
+        } catch (err) {
+            errorLog("Error in free-mode voice handler:", err);
+            await ctx.reply(
+                "Unable to process voice in free mode 😔 Try again or write in text.",
+                mainMenuKeyboard()
+            );
+        }
+        return;
+    }
 
     if (
         session.practiceType !== "speaking" ||

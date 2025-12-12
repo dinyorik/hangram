@@ -24,7 +24,8 @@ export function practiceKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🗣 Speaking", "PRACTICE_SPEAKING")],
     [Markup.button.callback("👂 Listening", "PRACTICE_LISTENING")],
-    [Markup.button.callback("📖 Reading", "PRACTICE_READING")]
+    [Markup.button.callback("📖 Reading", "PRACTICE_READING")],
+    [Markup.button.callback("💬 Free mode", "PRACTICE_FREE")]
   ]);
 }
 
